@@ -19,24 +19,24 @@ from alpaca.data.requests import (
     StockQuotesRequest
 )
 from alpaca.trading.requests import (
-    GetAssetsRequest, 
-    MarketOrderRequest, 
-    LimitOrderRequest, 
-    StopOrderRequest, 
-    StopLimitOrderRequest, 
-    TakeProfitRequest, 
-    StopLossRequest, 
-    TrailingStopOrderRequest, 
-    GetOrdersRequest, 
+    GetAssetsRequest,
+    MarketOrderRequest,
+    LimitOrderRequest,
+    StopOrderRequest,
+    StopLimitOrderRequest,
+    TakeProfitRequest,
+    StopLossRequest,
+    TrailingStopOrderRequest,
+    GetOrdersRequest,
     ClosePositionRequest
 )
-from alpaca.trading.enums import ( 
-    AssetStatus, 
-    AssetExchange, 
-    OrderSide, 
-    OrderType, 
-    TimeInForce, 
-    OrderClass, 
+from alpaca.trading.enums import (
+    AssetStatus,
+    AssetExchange,
+    OrderSide,
+    OrderType,
+    TimeInForce,
+    OrderClass,
     QueryOrderStatus
 )
 from alpaca.common.exceptions import APIError
@@ -44,14 +44,19 @@ from strategies.talib_indicators import *
 import math
 import yfinance as yf
 import logging
+import logging.handlers
 from collections import Counter
 from trading_client import market_status
 from helper_files.client_helper import strategies, get_latest_price, get_ndaq_tickers, dynamic_period_selector
+import os
 import time
-from datetime import datetime 
-import heapq 
+import glob
+from datetime import datetime
+import heapq
+import tarfile
 import certifi
 ca = certifi.where()
+'''
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -61,19 +66,70 @@ logging.basicConfig(
         logging.StreamHandler()             # Log messages to the console
     ]
 )
+'''
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        TimeAndSizeRotatingFileHandler(
+            'rank_system.log',
+            when='midnight',  # Rotate at midnight
+            backupCount=200,     # Keep 7 rotated log files
+            maxBytes=100,      # 100 MB per file
+            encoding='utf-8'
+        ),
+        logging.StreamHandler()  # Log messages to the console
+    ]
+)
+
+class TimeAndSizeRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
+    def __init__(self, filename, mode='a', maxBytes=0, backupCount=0, encoding=None, delay=False, when='midnight', interval=1, utc=False):
+        logging.handlers.TimedRotatingFileHandler.__init__(self, filename, when=when, interval=interval, backupCount=backupCount, encoding=encoding, delay=delay, utc=utc)
+        self.maxBytes = maxBytes * 1024 * 1024  # Convert to bytes
+
+    def shouldRollover(self, record):
+        if self.maxBytes > 0:
+            if os.path.exists(self.baseFilename):
+                file_size = os.path.getsize(self.baseFilename)
+                if file_size >= self.maxBytes:
+                    return True
+        return logging.handlers.TimedRotatingFileHandler.shouldRollover(self, record)
+
+    def doRollover(self):
+        # Get the current time stamp
+        timestamp = time.strftime("%Y%m%d%H%M%S", time.localtime())
+        # Create a new destination filename with timestamp
+        dest_filename = f"{self.baseFilename}.{timestamp}.log"
+        # Rotate the file
+        if os.path.exists(self.baseFilename):
+            os.rename(self.baseFilename, dest_filename)
+            # Compress the rotated file
+            with tarfile.open(f"{dest_filename}.tar.gz", "w:gz") as tar:
+                tar.add(dest_filename, arcname=os.path.basename(dest_filename))
+            os.remove(dest_filename)
+        # Find all rotated log files
+        rotated_files = glob.glob(f"{self.baseFilename}.*.log.tar.gz")
+        # If backupCount is set, remove oldest files
+        if self.backupCount > 0:
+            rotated_files.sort()
+            for file in rotated_files[:-self.backupCount]:
+                os.remove(file)
+        # Create a new log file
+        self.stream = self._open()
 
 def process_ticker(ticker, mongo_client):
    try:
-      
+
       current_price = None
-      
+
       while current_price is None:
          try:
             current_price = get_latest_price(ticker)
          except Exception as fetch_error:
             logging.warning(f"Error fetching price for {ticker}. Retrying... {fetch_error}")
             time.sleep(10)
-      
+
       indicator_tb = mongo_client.IndicatorsDatabase
       indicator_collection = indicator_tb.Indicators
       for strategy in strategies:
@@ -85,7 +141,7 @@ def process_ticker(ticker, mongo_client):
             except Exception as fetch_error:
                logging.warning(f"Error fetching historical data for {ticker}. Retrying... {fetch_error}")
                time.sleep(60)
-         db = mongo_client.trading_simulator  
+         db = mongo_client.trading_simulator
          holdings_collection = db.algorithm_holdings
          print(f"Processing {strategy.__name__} for {ticker}")
          strategy_doc = holdings_collection.find_one({"strategy": strategy.__name__})
@@ -96,12 +152,12 @@ def process_ticker(ticker, mongo_client):
          account_cash = strategy_doc["amount_cash"]
          total_portfolio_value = strategy_doc["portfolio_value"]
 
-         
+
          portfolio_qty = strategy_doc["holdings"].get(ticker, {}).get("quantity", 0)
 
          simulate_trade(ticker, strategy, historical_data, current_price,
                         account_cash, portfolio_qty, total_portfolio_value, mongo_client)
-         
+
       print(f"{ticker} processing completed.")
    except Exception as e:
       logging.error(f"Error in thread for {ticker}: {e}")
@@ -110,23 +166,23 @@ def simulate_trade(ticker, strategy, historical_data, current_price, account_cas
    """
    Simulates a trade based on the given strategy and updates MongoDB.
    """
-    
+
    # Simulate trading action from strategy
    print(f"Simulating trade for {ticker} with strategy {strategy.__name__} and quantity of {portfolio_qty}")
    action, quantity = simulate_strategy(strategy, ticker, current_price, historical_data, account_cash, portfolio_qty, total_portfolio_value)
-   
+
    # MongoDB setup
-   
+
    db = mongo_client.trading_simulator
    holdings_collection = db.algorithm_holdings
    points_collection = db.points_tally
-   
+
    # Find the strategy document in MongoDB
    strategy_doc = holdings_collection.find_one({"strategy": strategy.__name__})
    holdings_doc = strategy_doc.get("holdings", {})
    time_delta = db.time_delta.find_one({})['time_delta']
-   
-   
+
+
    # Update holdings and cash based on trade action
    if action in ["buy"] and strategy_doc["amount_cash"] - quantity * current_price > 15000 and quantity > 0 and ((portfolio_qty + quantity) * current_price) / total_portfolio_value < 0.10:
       logging.info(f"Action: {action} | Ticker: {ticker} | Quantity: {quantity} | Price: {current_price}")
@@ -139,7 +195,7 @@ def simulate_trade(ticker, strategy, historical_data, current_price, account_cas
          new_qty = quantity
          average_price = current_price
 
-      # Update the holdings document for the ticker. 
+      # Update the holdings document for the ticker.
       holdings_doc[ticker] = {
             "quantity": new_qty,
             "price": average_price
@@ -158,20 +214,20 @@ def simulate_trade(ticker, strategy, historical_data, current_price, account_cas
          },
          upsert=True
       )
-      
+
 
    elif action in ["sell"] and str(ticker) in holdings_doc and holdings_doc[str(ticker)]["quantity"] > 0:
-      
+
       logging.info(f"Action: {action} | Ticker: {ticker} | Quantity: {quantity} | Price: {current_price}")
       current_qty = holdings_doc[ticker]["quantity"]
-        
+
       # Ensure we do not sell more than we have
       sell_qty = min(quantity, current_qty)
       holdings_doc[ticker]["quantity"] = current_qty - sell_qty
-      
+
       price_change_ratio = current_price / holdings_doc[ticker]["price"] if ticker in holdings_doc else 1
-      
-      
+
+
 
       if current_price > holdings_doc[ticker]["price"]:
          #increment successful trades
@@ -180,7 +236,7 @@ def simulate_trade(ticker, strategy, historical_data, current_price, account_cas
             {"$inc": {"successful_trades": 1}},
             upsert=True
          )
-         
+
          # Calculate points to add if the current price is higher than the purchase price
          if price_change_ratio < 1.05:
             points = time_delta * 1
@@ -188,7 +244,7 @@ def simulate_trade(ticker, strategy, historical_data, current_price, account_cas
             points = time_delta * 1.5
          else:
             points = time_delta * 2
-         
+
       else:
          # Calculate points to deduct if the current price is lower than the purchase price
          if holdings_doc[ticker]["price"] == current_price:
@@ -196,22 +252,22 @@ def simulate_trade(ticker, strategy, historical_data, current_price, account_cas
                {"strategy": strategy.__name__},
                {"$inc": {"neutral_trades": 1}}
             )
-            
-         else:   
-            
+
+         else:
+
             holdings_collection.update_one(
                {"strategy": strategy.__name__},
                {"$inc": {"failed_trades": 1}},
                upsert=True
             )
-         
+
          if price_change_ratio > 0.975:
             points = -time_delta * 1
          elif price_change_ratio > 0.95:
             points = -time_delta * 1.5
          else:
             points = -time_delta * 2
-         
+
       # Update the points tally
       points_collection.update_one(
          {"strategy": strategy.__name__},
@@ -223,7 +279,7 @@ def simulate_trade(ticker, strategy, historical_data, current_price, account_cas
          },
          upsert=True
       )
-      if holdings_doc[ticker]["quantity"] == 0:      
+      if holdings_doc[ticker]["quantity"] == 0:
          del holdings_doc[ticker]
       # Update cash after selling
       holdings_collection.update_one(
@@ -239,11 +295,11 @@ def simulate_trade(ticker, strategy, historical_data, current_price, account_cas
          upsert=True
       )
 
-        
+
       # Remove the ticker if quantity reaches zero
-      if holdings_doc[ticker]["quantity"] == 0:      
+      if holdings_doc[ticker]["quantity"] == 0:
          del holdings_doc[ticker]
-        
+
    else:
       logging.info(f"Action: {action} | Ticker: {ticker} | Quantity: {quantity} | Price: {current_price}")
    print(f"Action: {action} | Ticker: {ticker} | Quantity: {quantity} | Price: {current_price}")
@@ -254,14 +310,14 @@ def update_portfolio_values(client):
    still need to implement.
    we go through each strategy and update portfolio value buy cash + summation(holding * current price)
    """
-   
-   db = client.trading_simulator  
+
+   db = client.trading_simulator
    holdings_collection = db.algorithm_holdings
    # Update portfolio values
    for strategy_doc in holdings_collection.find({}):
       # Calculate the portfolio value for the strategy
       portfolio_value = strategy_doc["amount_cash"]
-      
+
       for ticker, holding in strategy_doc["holdings"].items():
           # The current price can be gotten through a cache system maybe
           # if polygon api is getting clogged - but that hasn't happened yet
@@ -269,7 +325,7 @@ def update_portfolio_values(client):
           # Get the current price of the ticker from the Polygon API
           # Use a cache system to store the latest prices
           # If the cache is empty, fetch the latest price from the Polygon API
-          # Cache should be updated every 60 seconds 
+          # Cache should be updated every 60 seconds
 
           current_price = None
           while current_price is None:
@@ -285,18 +341,18 @@ def update_portfolio_values(client):
           holding_value = holding["quantity"] * current_price
           # Add the holding value to the portfolio value
           portfolio_value += holding_value
-          
+
       # Update the portfolio value in the strategy document
       holdings_collection.update_one({"strategy": strategy_doc["strategy"]}, {"$set": {"portfolio_value": portfolio_value}}, upsert=True)
 
    # Update MongoDB with the modified strategy documents
-   
+
 
 def update_ranks(client):
    """"
    based on portfolio values, rank the strategies to use for actual trading_simulator
    """
-   
+
    db = client.trading_simulator
    points_collection = db.points_tally
    rank_collection = db.rank
@@ -319,17 +375,17 @@ def update_ranks(client):
       if strategy_name == "test" or strategy_name == "test_strategy":
          continue
       if points_collection.find_one({"strategy": strategy_name})["total_points"] > 0:
-         
+
          heapq.heappush(q, (points_collection.find_one({"strategy": strategy_name})["total_points"] * 2 + (strategy_doc["portfolio_value"]), strategy_doc["successful_trades"] - strategy_doc["failed_trades"], strategy_doc["amount_cash"], strategy_doc["strategy"]))
       else:
          heapq.heappush(q, (strategy_doc["portfolio_value"], strategy_doc["successful_trades"] - strategy_doc["failed_trades"], strategy_doc["amount_cash"], strategy_doc["strategy"]))
    rank = 1
    while q:
-      
+
       _, _, _, strategy_name = heapq.heappop(q)
       rank_collection.insert_one({"strategy": strategy_name, "rank": rank})
       rank+=1
-   
+
    """
    Delete historical database so new one can be used tomorrow
    """
@@ -338,28 +394,28 @@ def update_ranks(client):
    collection.delete_many({})
    print("Successfully updated ranks")
    print("Successfully deleted historical database")
-   
-def main():  
-   """  
-   Main function to control the workflow based on the market's status.  
-   """  
-   ndaq_tickers = []  
+
+def main():
+   """
+   Main function to control the workflow based on the market's status.
+   """
+   ndaq_tickers = []
    early_hour_first_iteration = True
    post_market_hour_first_iteration = True
-   
-   
-   while True: 
+
+
+   while True:
       mongo_client = MongoClient(mongo_url, tlsCAFile=ca)
       status = mongo_client.market_data.market_status.find_one({})["market_status"]
-      
-      if status == "open":  
+
+      if status == "open":
          # Connection pool is not thread safe. Create a new client for each thread.
          # We can use ThreadPoolExecutor to manage threads - maybe use this but this risks clogging
          # resources if we have too many threads or if a thread is on stall mode
          # We can also use multiprocessing.Pool to manage threads
-         
+
          if not ndaq_tickers:
-            logging.info("Market is open. Processing strategies.")  
+            logging.info("Market is open. Processing strategies.")
             ndaq_tickers = get_ndaq_tickers(mongo_client, FINANCIAL_PREP_API_KEY)
 
          threads = []
@@ -373,49 +429,49 @@ def main():
          for thread in threads:
             thread.join()
 
-         
-         
+
+
 
          logging.info("Finished processing all strategies. Waiting for 120 seconds.")
-         time.sleep(120)  
-      
-      elif status == "early_hours":  
+         time.sleep(120)
+
+      elif status == "early_hours":
             # During early hour, currently we only support prep
             # However, we should add more features here like premarket analysis
-            
-            if early_hour_first_iteration is True:  
-               
-               ndaq_tickers = get_ndaq_tickers(mongo_client, FINANCIAL_PREP_API_KEY)  
-               early_hour_first_iteration = False  
+
+            if early_hour_first_iteration is True:
+
+               ndaq_tickers = get_ndaq_tickers(mongo_client, FINANCIAL_PREP_API_KEY)
+               early_hour_first_iteration = False
                post_market_hour_first_iteration = True
-               logging.info("Market is in early hours. Waiting for 60 seconds.")  
-            time.sleep(60)  
-  
-      elif status == "closed":  
+               logging.info("Market is in early hours. Waiting for 60 seconds.")
+            time.sleep(60)
+
+      elif status == "closed":
         # Performs post-market analysis for next trading day
         # Will only run once per day to reduce clogging logging
         # Should self-implementing a delete log process after a certain time - say 1 year
-        
+
         if post_market_hour_first_iteration is True:
             early_hour_first_iteration = True
-            logging.info("Market is closed. Performing post-market analysis.") 
+            logging.info("Market is closed. Performing post-market analysis.")
             post_market_hour_first_iteration = False
             #increment time_delta in database by 0.01
-            
+
             mongo_client.trading_simulator.time_delta.update_one({}, {"$inc": {"time_delta": 0.01}})
-            
-            
+
+
             #Update ranks
             update_portfolio_values(mongo_client)
             # We keep reusing the same mongo client and never close to reduce the number within the connection pool
 
             update_ranks(mongo_client)
-        time.sleep(60)  
-      else:  
-        logging.error("An error occurred while checking market status.")  
+        time.sleep(60)
+      else:
+        logging.error("An error occurred while checking market status.")
         time.sleep(60)
       mongo_client.close()
-   
-  
-if __name__ == "__main__":  
+
+
+if __name__ == "__main__":
    main()
