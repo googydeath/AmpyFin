@@ -37,7 +37,9 @@ logging.basicConfig(
     ]
 )
 
-
+"""
+Determines the majority decision (buy, sell, or hold) and returns the weighted median quantity for the chosen action.
+"""
 def weighted_majority_decision_and_median_quantity(decisions_and_quantities):  
     """  
     Determines the majority decision (buy, sell, or hold) and returns the weighted median quantity for the chosen action.  
@@ -88,7 +90,9 @@ def main():
     asset_collection = db.assets_quantities
     strategy_to_coefficient = {}
     while True:
-        
+        """
+        We don't ever close mongo db because it's a shared resource
+        """
         client = RESTClient(api_key=POLYGON_API_KEY)
         trading_client = TradingClient(API_KEY, API_SECRET)
         data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
@@ -117,9 +121,17 @@ def main():
                     early_hour_first_iteration = False
                     post_hour_first_iteration = True
             account = trading_client.get_account()
+            """
+            We don't have to update this every time we access a ndaq ticker because updating website isn't priority - trading efficiency is
+            """
             qqq_latest = get_latest_price('QQQ')
             spy_latest = get_latest_price('SPY')
-            
+            """
+            buy heap: this is the main priority heap. - we try to buy when we can - this is what Ampyfin deems if buy over sell or hold
+            suggestion heap: this is the secondary priority heap - if nothing is in the buy heap and there is still money to be spent, we rank buys based on 
+            difference between sell weight vs buy weight 
+            suggestion heap is to encourage the program to be less pragmatic - it will buy when it can - however this can be turned off in later improvements
+            """
             buy_heap = []
             suggestion_heap = []
             """
@@ -140,7 +152,9 @@ def main():
                     portfolio_collection = trades_db.portfolio_values
                     
                     """
-                    we update instead of insert
+                    we update instead of insert.
+                    That way  we can update the portfolio value in real time
+                    Maybe update portfolio value + rank in real time as well and reflect that on rank update - maybe next time
                     """
                     
                     portfolio_collection.update_one({"name" : "portfolio_percentage"}, {"$set": {"portfolio_value": (portfolio_value-50000)/50000}})
@@ -189,14 +203,16 @@ def main():
                         buy_quantity = min(int(max_investment // current_price), int(buying_power // current_price))
                         
 
-                        heapq.heappush(suggestion_heap, (-buy_weight, buy_quantity, ticker))
+                        heapq.heappush(suggestion_heap, (-(buy_weight - sell_weight), buy_quantity, ticker))
                     print(f"Ticker: {ticker}, Decision: {decision}, Quantity: {quantity}, Weights: Buy: {buy_weight}, Sell: {sell_weight}, Hold: {hold_weight}")
                     """
                     later we should implement buying_power regulator depending on vix strategy
                     for now in bull: 15000
                     for bear: 5000
                     """
-                    
+                    if market_status(trading_client) == "closed":
+                        break
+
                     if decision == "buy" and float(account.cash) > 15000 and (((quantity + portfolio_qty) * current_price) / portfolio_value) < 0.1:
                         
                         heapq.heappush(buy_heap, (-(buy_weight-(sell_weight + (hold_weight * 0.5))), quantity, ticker))
