@@ -67,21 +67,6 @@ logging.basicConfig(
     ]
 )
 '''
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[
-        TimeAndSizeRotatingFileHandler(
-            'rank_system.log',
-            when='midnight',  # Rotate at midnight
-            backupCount=200,     # Keep 7 rotated log files
-            maxBytes=100,      # 100 MB per file
-            encoding='utf-8'
-        ),
-        logging.StreamHandler()  # Log messages to the console
-    ]
-)
 
 class TimeAndSizeRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
     def __init__(self, filename, mode='a', maxBytes=0, backupCount=0, encoding=None, delay=False, when='midnight', interval=1, utc=False):
@@ -117,6 +102,22 @@ class TimeAndSizeRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
                 os.remove(file)
         # Create a new log file
         self.stream = self._open()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        TimeAndSizeRotatingFileHandler(
+            'rank_system.log',
+            when='midnight',  # Rotate at midnight
+            backupCount=200,     # Keep 7 rotated log files
+            maxBytes=100,      # 100 MB per file
+            encoding='utf-8'
+        ),
+        logging.StreamHandler()  # Log messages to the console
+    ]
+)
 
 def process_ticker(ticker, mongo_client):
    try:
